@@ -1,149 +1,160 @@
 import java.math.BigDecimal
 
 enum class CountryCode {
-    EE
+    EE, US, GB
 }
 
 enum class CurrencyCode {
-    EUR
+    EUR, RUB, USD
 }
 
-interface BankInfo {
-    val name: String
-    val address: String
-    val countryCode: CountryCode
+sealed interface PaymentMode
+object Instant: PaymentMode
+sealed interface NonInstantMode: PaymentMode
+object Regular: NonInstantMode
+object Urgent: NonInstantMode
+
+data class PaymentAmount(val volume: BigDecimal, val currencyCode: CurrencyCode) {
+    infix operator fun plus(amount: PaymentAmount): PaymentAmount? =
+        if (currencyCode == amount.currencyCode)
+            PaymentAmount(volume = volume + amount.volume, currencyCode = currencyCode)
+        else
+            null
+    infix operator fun minus(amount: PaymentAmount): PaymentAmount? =
+        if (currencyCode == amount.currencyCode)
+            PaymentAmount(volume = volume - amount.volume, currencyCode = currencyCode)
+        else
+            null
 }
 
-data class InternationalBankInfo(
-    override val name: String,
-    override val address: String,
-    override val countryCode: CountryCode
-) : BankInfo
+fun BigDecimal.toEur() = PaymentAmount(volume = this, currencyCode = CurrencyCode.EUR)
 
-data class SepaBankInfo(
-    override val name: String,
-    override val address: String,
-    override val countryCode: CountryCode
-) : BankInfo
-
-data class LocalBank(
-    override val name: String,
-    override val address: String
-) : BankInfo {
-    override val countryCode: CountryCode = CountryCode.EE
-}
-
-val myBank: LocalBank = LocalBank(
-    name = "My Own Bank",
-    address = "Somewhere in the middle of nowhere"
+data class BankInfo(
+    val name: String,
+    val address: String,
+    val countryCode: CountryCode,
+    val swiftCode: String
 )
 
-interface PaymentParty {
-    val fullname: String
+sealed interface PaymentParty {
     val accountNumber: String
-    val bankInfo: BankInfo
 }
 
 data class InternationalPaymentParty(
-    override val fullname: String,
     override val accountNumber: String,
-    override val bankInfo: BankInfo
+    val fullName: String,
+    val address: String,
+    val bankInfo: BankInfo
 ) : PaymentParty
 
 data class SepaPaymentParty(
-    override val fullname: String,
     override val accountNumber: String,
-    override val bankInfo: SepaBankInfo
+    val fullName: String
 ) : PaymentParty
 
-data class LocalPaymentParty(
-    override val fullname: String,
+data class OwnAccountPaymentParty(
     override val accountNumber: String,
-    override val bankInfo: LocalBank
-) : PaymentParty
+): PaymentParty
 
-data class InternalPaymentParty(
-    override val fullname: String,
-    override val accountNumber: String
-) : PaymentParty {
-    override val bankInfo: LocalBank = myBank
-}
-
-data class PaymentAmount(val volume: BigDecimal, val currencyCode: CurrencyCode)
-
-private fun BigDecimal.toEur() = PaymentAmount(volume = this, currencyCode = CurrencyCode.EUR)
-
-interface Payment {
-    val sender: InternalPaymentParty
-    val receiver: PaymentParty
+sealed interface Payment {
+    val from: OwnAccountPaymentParty
+    val to: PaymentParty
     val amount: PaymentAmount
-    val note: String
-    val urgent: Boolean
 }
 
-data class AnyPayment<ReceiverParty: PaymentParty>(
-    override val sender: InternalPaymentParty,
-    override val receiver: ReceiverParty,
+data class AnyPayment<ReceiverParty: PaymentParty, Mode: PaymentMode>(
+    override val from: OwnAccountPaymentParty,
+    override val to: ReceiverParty,
     override val amount: PaymentAmount,
-    override val note: String,
-    override val urgent: Boolean
+    val note: String? = null,
+    val mode: Mode
 ): Payment
 
-data class EuroPayment<ReceiverParty: PaymentParty>(
-    override val sender: InternalPaymentParty,
-    override val receiver: ReceiverParty,
-    val amountInEuro: BigDecimal,
-    override val note: String,
-    override val urgent: Boolean
-): Payment {
-    override val amount: PaymentAmount = amountInEuro.toEur()
+typealias InternationalPayment = AnyPayment<InternationalPaymentParty, Regular>
+typealias SepaPayment = AnyPayment<SepaPaymentParty, NonInstantMode>
+typealias LocalPayment = AnyPayment<SepaPaymentParty, Instant>
+typealias OwnAccountPayment = AnyPayment<OwnAccountPaymentParty, Instant>
+
+sealed interface PaymentError
+object InsufficientMoneyError: PaymentError
+data class CurrencyMismatchError(val requested: CurrencyCode, val actual: CurrencyCode): PaymentError
+data class PaymentPartyNotFound(val paymentParty: PaymentParty): PaymentError
+data class SameAccountError(val accountNumber: String): PaymentError
+data class AccountLimitError(val requested: BigDecimal, val available: BigDecimal): PaymentError
+
+sealed interface PaymentResult
+data class PaymentSuccess(val payment: Payment, val remainingFrom: PaymentAmount, val remainingTo: PaymentAmount): PaymentResult {
+    constructor(payment: Payment, remaining: Pair<PaymentAmount, PaymentAmount>): this(
+        payment = payment,
+        remainingFrom = remaining.first,
+        remainingTo = remaining.second
+    )
+}
+data class PaymentFailure(val error: PaymentError): PaymentResult
+
+sealed interface AccountRecord {
+    val accountNumber: String
+    val amount: PaymentAmount
+
+    infix operator fun plus(volume: BigDecimal): AccountRecord// = transfer(volume)
+    infix operator fun minus(volume: BigDecimal): AccountRecord = plus(-volume)
 }
 
-typealias InternationalPayment = AnyPayment<PaymentParty>
-typealias SepaPayment = EuroPayment<SepaPaymentParty>
-typealias LocalPayment = EuroPayment<LocalPaymentParty>
-typealias InternalPayment = EuroPayment<InternalPaymentParty>
+data class OwnAccountRecord(
+    override val accountNumber: String,
+    override val amount: PaymentAmount
+): AccountRecord {
+    constructor(accountNumber: String, amount: String): this(
+        accountNumber = accountNumber,
+        amount = BigDecimal(amount).toEur()
+    )
 
-/*
-data class InternationalPayment(
-    override val sender: InternalPaymentParty,
-    override val receiver: PaymentParty,
+    override fun plus(volume: BigDecimal): AccountRecord = copy(amount = amount.copy(volume = amount.volume + volume))
+}
+
+data class SepaAccountRecord(
+    override val accountNumber: String,
     override val amount: PaymentAmount,
-    override val note: String,
-    override val urgent: Boolean
-) : Payment
+    val fullName: String,
+): AccountRecord {
+    constructor(accountNumber: String, amount: String, fullName: String): this(
+        accountNumber = accountNumber,
+        amount = BigDecimal(amount).toEur(),
+        fullName = fullName
+    )
 
-data class SepaPayment(
-    override val sender: InternalPaymentParty,
-    override val receiver: SepaPaymentParty,
-    val amountInEuro: BigDecimal,
-    override val note: String,
-    override val urgent: Boolean
-) : Payment {
-    override val amount: PaymentAmount = amountInEuro.toEur()
+    override fun plus(volume: BigDecimal): AccountRecord = copy(amount = amount.copy(volume = amount.volume + volume))
 }
 
-data class LocalPayment(
-    override val sender: InternalPaymentParty,
-    override val receiver: LocalPaymentParty,
-    val amountInEuro: BigDecimal,
-    override val note: String,
-    override val urgent: Boolean
-): Payment {
-    override val amount: PaymentAmount = amountInEuro.toEur()
+data class InternationalAccountRecord(
+    override val accountNumber: String,
+    override val amount: PaymentAmount,
+    val fullName: String,
+    val address: String,
+    val bankInfo: BankInfo
+): AccountRecord {
+    constructor(accountNumber: String, amount: String, fullName: String, address: String, bankInfo: BankInfo): this(
+        accountNumber = accountNumber,
+        amount = BigDecimal(amount).toEur(),
+        fullName = fullName,
+        address = address,
+        bankInfo = bankInfo
+    )
+
+    override fun plus(volume: BigDecimal): AccountRecord = copy(amount = amount.copy(volume = amount.volume + volume))
 }
 
-data class InternalPayment(
-    override val sender: InternalPaymentParty,
-    override val receiver: InternalPaymentParty,
-    val amountInEuro: BigDecimal,
-    override val note: String,
-    override val urgent: Boolean
-): Payment {
-    override val amount: PaymentAmount = amountInEuro.toEur()
+fun Payment.matches(p: AccountRecord): Boolean = when(to) {
+    is OwnAccountPaymentParty ->  p is OwnAccountRecord && to.accountNumber == p.accountNumber
+    // TODO: WTF CASTS?
+    is SepaPaymentParty ->
+        p is SepaAccountRecord &&
+            to.accountNumber == p.accountNumber &&
+            (to as SepaPaymentParty).fullName == p.fullName
+    is InternationalPaymentParty ->
+        p is InternationalAccountRecord &&
+            to.accountNumber == p.accountNumber &&
+            (to as InternationalPaymentParty).fullName == p.fullName &&
+            (to as InternationalPaymentParty).address == p.address &&
+            (to as InternationalPaymentParty).bankInfo == p.bankInfo
 }
-*/
-data class PaymentResult<T: Payment>(
-    val payment: T,
-    val success: Boolean
-)
