@@ -62,18 +62,18 @@ sealed interface Payment {
     val amount: PaymentAmount
 }
 
-data class AnyPayment<ReceiverParty: PaymentParty, Mode: PaymentMode>(
+data class AnyPayment<ReceiverParty: PaymentParty, Mode: PaymentMode, NoteType: String?>(
     override val from: OwnAccountPaymentParty,
     override val to: ReceiverParty,
     override val amount: PaymentAmount,
-    val note: String? = null,
+    val note: NoteType,
     val mode: Mode
 ): Payment
 
-typealias InternationalPayment = AnyPayment<InternationalPaymentParty, Regular>
-typealias SepaPayment = AnyPayment<SepaPaymentParty, NonInstantMode>
-typealias LocalPayment = AnyPayment<SepaPaymentParty, Instant>
-typealias OwnAccountPayment = AnyPayment<OwnAccountPaymentParty, Instant>
+typealias InternationalPayment = AnyPayment<InternationalPaymentParty, Regular, String>
+typealias SepaPayment = AnyPayment<SepaPaymentParty, NonInstantMode, String>
+typealias LocalPayment = AnyPayment<SepaPaymentParty, Instant, String?>
+typealias OwnAccountPayment = AnyPayment<OwnAccountPaymentParty, Instant, String?>
 
 sealed interface PaymentError
 object InsufficientMoneyError: PaymentError
